@@ -1,0 +1,414 @@
+<!doctype html><html lang="ko"><meta charset="utf-8">
+<title>AI SAST 통합 리포트 — userland</title>
+<style>
+:root{--ink:#16181d;--mut:#5c6370;--line:#e3e6ea;--acc:#b4451f;--bg:#fbfaf8}
+*{box-sizing:border-box}
+body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+ font:16px/1.75 -apple-system,"Segoe UI","Noto Sans KR",sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:48px 24px 96px}
+h1{font-size:30px;line-height:1.3;margin:0 0 8px;letter-spacing:-.02em}
+h2{font-size:22px;margin:56px 0 14px;padding-bottom:8px;border-bottom:2px solid var(--ink)}
+h3{font-size:18px;margin:36px 0 10px;color:var(--acc)}
+h4{font-size:15px;margin:26px 0 6px;padding-left:10px;border-left:3px solid var(--acc)}
+p{margin:10px 0}
+li{margin:5px 0;margin-left:20px}
+li.num{list-style:decimal;margin-left:24px}
+code{background:#eceff3;padding:1px 5px;border-radius:3px;font-size:.87em;
+ font-family:ui-monospace,Menlo,monospace}
+pre{background:#22252b;color:#e6e6e6;padding:14px 16px;border-radius:6px;
+ overflow-x:auto;font-size:13px;line-height:1.6;white-space:pre}
+pre code{background:none;color:inherit;padding:0}
+blockquote{margin:14px 0;padding:10px 16px;background:#fff;border-left:3px solid var(--mut);
+ color:var(--mut);font-size:.94em}
+table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13px;background:#fff}
+th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+th{background:#f0f2f5;font-weight:600;white-space:nowrap}
+strong{font-weight:650}
+hr{border:none;border-top:1px solid var(--line);margin:36px 0}
+a{color:var(--acc);text-decoration:none}
+a:hover{text-decoration:underline}
+</style><div class="wrap"><h1 id="ai-기반-sast-에이전트-통합-리포트">AI 기반 SAST 에이전트 — 통합 리포트</h1>
+<p><strong>프로젝트명</strong> <code>ai-sast-userland</code> · <strong>대상</strong> <code>github.com/raspberrypi/userland</code> (master)</p>
+<p><strong>작성</strong> BoB15 컨설팅 트랙 박정은</p>
+<hr>
+<h2 id="목차">목차</h2>
+<li class='num'><a href="#1-한눈에-보기-executive-summary">한눈에 보기 (Executive Summary)</a></li>
+<li class='num'><a href="#2-에이전트-구성도-architecture">에이전트 구성도 (Architecture)</a></li>
+<li class='num'><a href="#3-스킬-설계-시-주안점">스킬 설계 시 주안점</a></li>
+<li class='num'><a href="#4-토큰-절약-방안--설계와-도입-이유">토큰 절약 방안 — 설계와 도입 이유</a></li>
+<li class='num'><a href="#5-작성-시-사용한-프롬프트">작성 시 사용한 프롬프트</a></li>
+<li class='num'><a href="#6-산출물--분석-결과">산출물 — 분석 결과</a></li>
+<li class='num'><a href="#7-기존-도구와의-차별점">기존 도구와의 차별점</a></li>
+<li class='num'><a href="#8-한계와-향후-과제">한계와 향후 과제</a></li>
+<hr>
+<h2 id="1-한눈에-보기-executive-summary">1. 한눈에 보기 (Executive Summary)</h2>
+<blockquote><strong>한 문장 요약</strong> — *&quot;LLM 은 비싸니까, LLM 이 꼭 봐야 하는 코드만 골라서 보여준다.&quot;*</blockquote>
+<p>160,000줄짜리 저장소를 LLM 컨텍스트에 통째로 넣는 건 불가능하다. 그래서</p>
+<p><strong>LLM 을 쓰지 않는 에이전트 2개</strong>로 후보를 극단적으로 좁힌 뒤,</p>
+<p><strong>LLM 에이전트 3개</strong>가 판정 → 반대신문 → 보고를 나눠 맡는 5-에이전트</p>
+<p>파이프라인을 만들었다.</p>
+<h3 id="핵심-수치">핵심 수치</h3>
+<table><tbody>
+<tr><th>항목</th><th>값</th></tr>
+<tr><td>인덱싱한 소스 파일</td><td>277개 (5.4 MB)</td></tr>
+<tr><td>슬라이싱된 함수</td><td>3,687개</td></tr>
+<tr><td>위험 싱크 적중 함수</td><td>428개 (11.6%)</td></tr>
+<tr><td>Sieve 통과 후보</td><td>225개</td></tr>
+<tr><td>파일 통째로 넣을 때 예상 토큰</td><td>약 1,523,902</td></tr>
+<tr><td>실제 LLM 프롬프트 토큰</td><td>약 95,437 (<strong>93.7% 절감</strong>)</td></tr>
+<tr><td>Scout + Sieve 소요 시간</td><td>2.13초 (LLM 호출 0회)</td></tr>
+<tr><td>정밀 판정 건수</td><td>15건</td></tr>
+<tr><td>확정 / 하향 / 기각</td><td>8건 / 3건 / 4건</td></tr>
+<tr><td>심각도 분포</td><td>치명적 2 · 높음 5 · 보통 1 · 낮음 3</td></tr>
+</tbody></table>
+<h3 id="가장-중요한-발견-두-가지">가장 중요한 발견 두 가지</h3>
+<li><strong><code>hello_teapot/models.c</code> Wavefront <code>.obj</code> 로더</strong> — 경계 검사 없는</li>
+<p>  <code>sscanf(&quot;%s&quot;)</code> 로 256바이트 파일 라인을 32바이트 필드에 복사 (치명적).</p>
+<p>  같은 결함이 <code>raspicam/gl_scenes/models.c</code> 에 복제되어 있음.</p>
+<li><strong><code>interface/vmcs_host/vcilcs.c</code> IPC 수신 경로</strong> — 경계 검사를</li>
+<p>  <code>vcos_assert</code> 에만 의존하는데, 이 매크로는 **릴리스 빌드에서</p>
+<p>  <code>(void)0</code> 으로 사라짐** (높음).</p>
+<hr>
+<h2 id="2-에이전트-구성도-architecture">2. 에이전트 구성도 (Architecture)</h2>
+<h3 id="2-1-전체-흐름">2-1. 전체 흐름</h3>
+<pre>
+                    raspberrypi/userland  (277 files / 5.4 MB / ~1.55M tokens)
+                                 │
+   ┌─────────────────────────────▼──────────────────────────────┐
+   │  Agent 1 : Scout  (정찰병)                    LLM 호출 0회   │
+   │  · 저장소 워킹, 소스 파일 인덱싱                            │
+   │  · 아키텍처 계층 기준으로 3개 batch 분할                    │
+   └─────────────────────────────┬──────────────────────────────┘
+                                 │  batch1 / batch2 / batch3
+   ┌─────────────────────────────▼──────────────────────────────┐
+   │  Agent 2 : Sieve  (체)                        LLM 호출 0회  │
+   │  · Slicer 로 함수 단위 분할 (3,687 functions)               │
+   │  · 21개 싱크 규칙으로 점수화 → 저점수 폐기                  │
+   │  · 정규화 해시로 중복 함수 접기(fold)                       │
+   │  · 긴 함수는 싱크 주변만 shrink                             │
+   │  ⇒ 여기서 토큰 96.7% 가 사라진다                            │
+   └─────────────────────────────┬──────────────────────────────┘
+                                 │  225 candidates
+   ┌─────────────────────────────▼──────────────────────────────┐
+   │  Agent 3 : Analyst  (1차 판정관)      model: Haiku 4.5      │
+   │  · 후보 1건 = 호출 1회, JSON 스키마 강제                    │
+   │  · vulnerable / needs_context / not_a_bug 3분류             │
+   │  · 모르면 반드시 needs_context (환각 방지 1차 방어선)       │
+   └─────────────────────────────┬──────────────────────────────┘
+                                 │  고위험만 승격
+   ┌─────────────────────────────▼──────────────────────────────┐
+   │  Agent 4 : Verifier  (반대신문관)     model: Sonnet 4.6     │
+   │  · Analyst 주장을 &quot;반박하는&quot; 것이 목표                      │
+   │  · 인용한 라인이 실제 코드와 다르면 → 환각으로 기각         │
+   │  · 부족한 문맥은 Context Broker 로 on-demand 조회           │
+   │  ⇒ confirmed / downgraded / rejected                        │
+   └─────────────────────────────┬──────────────────────────────┘
+                                 │  구조화된 findings (소스 없음)
+   ┌─────────────────────────────▼──────────────────────────────┐
+   │  Agent 5 : Reporter  (보고관)         model: Sonnet 4.6     │
+   │  · 원본 소스를 아예 보지 않는다 (설계상 의도)               │
+   │  · batch당 1회 호출 → report.md / report.html               │
+   └────────────────────────────────────────────────────────────┘
+
+   ┌────────────────────────────────────────────────────────────┐
+   │  Tool : Context Broker  (문맥 중개인)          LLM 아님     │
+   │  Verifier 가 &quot;이 심볼 더 보여줘&quot; 라고 할 때만 코드를 퍼옴   │
+   │  1회 최대 3심볼 / 60줄 예산 → 문맥 요청이 토큰 폭탄이 되는  │
+   │  것을 막는다                                                │
+   └────────────────────────────────────────────────────────────┘
+</pre>
+<h3 id="2-2-에이전트별-역할과-스킬">2-2. 에이전트별 역할과 스킬</h3>
+<table><tbody>
+<tr><th>#</th><th>에이전트</th><th>역할(Role)</th><th>보유 스킬(Skill)</th><th>모델</th><th>호출 수</th></tr>
+<tr><td>1</td><td><strong>Scout</strong></td><td>저장소 지도 제작</td><td>파일시스템 워킹, 확장자/디렉터리 필터, 계층 기반 배치 분할</td><td>없음</td><td>0</td></tr>
+<tr><td>2</td><td><strong>Sieve</strong></td><td>후보 선별</td><td>함수 단위 슬라이싱, 싱크 규칙 매칭, source↔sink 동거 가중치, 정규화 해시 dedup, shrink</td><td>없음</td><td>0</td></tr>
+<tr><td>3</td><td><strong>Analyst</strong></td><td>1차 판정</td><td>데이터 출처 추적, 경계 검사 유무 판단, JSON 스키마 준수, 모를 때 <code>needs_context</code> 선언</td><td>Haiku 4.5</td><td>후보당 1</td></tr>
+<tr><td>4</td><td><strong>Verifier</strong></td><td>반대신문</td><td>라인 대조 환각 탐지, 상수·매크로 추적, 도달 가능성 반박, 심각도 조정</td><td>Sonnet 4.6</td><td>고위험당 1</td></tr>
+<tr><td>5</td><td><strong>Reporter</strong></td><td>보고서 작성</td><td>집계, 한국어 서술, 표 생성 — <strong>소스 코드 접근 없음</strong></td><td>Sonnet 4.6</td><td>배치당 1</td></tr>
+</tbody></table>
+<p><strong>Analyst 와 Verifier 를 나눈 이유</strong> — 한 에이전트가 &quot;찾고&quot; 동시에</p>
+<p>&quot;검증&quot;하면 자기가 쓴 말을 옹호하게 된다. Verifier 프롬프트에는</p>
+<p>명시적으로 이렇게 써서 인센티브를 반대로 걸었다.</p>
+<blockquote>*&quot;You are rewarded for correctly rejecting false positives, not for agreeing.&quot;*</blockquote>
+<p>이 분리로 정밀 판정 15건 중 <strong>4건 기각, 3건 하향</strong>이 나왔다.</p>
+<h3 id="2-3-sieve-규칙집-구조">2-3. Sieve 규칙집 구조</h3>
+<p>각 규칙은 <code>(정규식, 가중치, CWE, 태그)</code> 4-튜플이다.</p>
+<pre>
+dict(id=&quot;MEM.STRCPY&quot;, pattern=r&quot;\b(strcpy|strcat|stpcpy)\s*\(&quot;,
+     weight=9, cwe=&quot;CWE-120&quot;, tag=&quot;buffer&quot;)
+</pre>
+<p>핵심은 <strong>source ↔ sink 동거 가중치</strong>다. <code>argv</code>/<code>getenv</code>/<code>fread</code> 같은</p>
+<p>*입력원(source)* 과 <code>strcpy</code>/<code>system</code>/<code>sprintf</code> 같은 *위험 지점(sink)* 이</p>
+<p><strong>같은 함수 안에 함께 있으면</strong> 점수를 1.6배로 올린다. 데이터 흐름 분석을</p>
+<p>안 해도 &quot;입력이 들어오는 함수에서 위험한 걸 한다&quot;는 가장 흔한 취약 패턴을</p>
+<p>값싸게 잡아낼 수 있다.</p>
+<h3 id="2-4-배치-분할-기준">2-4. 배치 분할 기준</h3>
+<p>파일 개수로 3등분하지 않고 <strong>아키텍처 계층</strong>으로 나눴다. 같은 계층 안의</p>
+<p>코드는 위협 모델이 비슷해서, 배치 단위로 일관된 판단이 가능하다.</p>
+<table><tbody>
+<tr><th>배치</th><th>계층</th><th>위협 모델</th></tr>
+<tr><td>batch1</td><td><code>host_applications/</code></td><td>CLI 인자·파일 경로 등 <strong>사용자 입력</strong>이 직접 들어옴</td></tr>
+<tr><td>batch2</td><td><code>containers/</code></td><td>네트워크·파일에서 온 <strong>신뢰할 수 없는 미디어 데이터</strong> 파싱</td></tr>
+<tr><td>batch3</td><td><code>interface/</code></td><td>VCHIQ/ILCS 로 <strong>프로세스·펌웨어 경계</strong>를 넘는 데이터</td></tr>
+</tbody></table>
+<hr>
+<h2 id="3-스킬-설계-시-주안점">3. 스킬 설계 시 주안점</h2>
+<p>각 에이전트에게 &quot;스킬&quot;을 부여할 때 고려한 원칙을 정리한다.</p>
+<h3 id="3-1-scout-sieve-판단하지-않는-스킬">3-1. Scout / Sieve — &quot;판단하지 않는 스킬&quot;</h3>
+<p>이 두 에이전트는 의도적으로 LLM 을 배제했다. 스킬을 설계할 때 기준은</p>
+<p><strong>&quot;정규식과 괄호 균형 계산만으로 답이 나오는 일인가?&quot;</strong> 였다.</p>
+<li>파일 인덱싱, 디렉터리 필터링 → 답이 결정론적이므로 LLM 불필요</li>
+<li>함수 단위 슬라이싱 → tree-sitter 같은 외부 파서 의존성 없이, 주석/문자열</li>
+<p>  상태 머신 + 중괄호 카운팅으로 직접 구현 (환경 제약 없이 어디서든 동작)</p>
+<li>싱크 규칙 매칭 → &quot;위험한 함수 이름이 있는가&quot;는 판단이 아니라 검색이다</li>
+<p><strong>주안점</strong>: LLM 이 잘하는 일(맥락 판단)과 못 미더운 일(정확한 문자열 탐색)을</p>
+<p>분리하고, 후자는 절대 LLM 에 맡기지 않는다.</p>
+<h3 id="3-2-analyst-정해진-순서로-생각하게-하는-스킬">3-2. Analyst — &quot;정해진 순서로 생각하게 하는 스킬&quot;</h3>
+<p>Analyst 의 스킬은 데이터 출처 추적 능력인데, 이를 프롬프트 안에서</p>
+<p><strong>강제된 사고 순서</strong>로 스킬화했다.</p>
+<pre>
+1. Where does the data COME FROM?
+2. Is there a bound check between source and sink, INSIDE this slice?
+3. Is the bound derived from the DESTINATION&#x27;s size, or the SOURCE&#x27;s data?
+4. If you cannot answer (1), the verdict is needs_context.
+</pre>
+<p><strong>주안점</strong>: &quot;판단해라&quot;라고만 하면 LLM 마다 접근 순서가 들쭉날쭉해서</p>
+<p>품질이 흔들린다. 체크리스트를 순서대로 강제하면 같은 프롬프트를</p>
+<p>어느 모델에 태워도 결과 품질 편차가 줄어든다. 3번 항목(&quot;목적지 크기</p>
+<p>기준인가, 원본 데이터 기준인가&quot;)이 결과적으로 가장 많은 오탐을 걸러냈다.</p>
+<h3 id="3-3-verifier-반박을-시키는-스킬">3-3. Verifier — &quot;반박을 시키는 스킬&quot;</h3>
+<p>Verifier 의 스킬은 &quot;코드를 검증하는 것&quot;이 아니라 **&quot;동료의 주장에서</p>
+<p>허점을 찾는 것&quot;** 으로 정의했다. 체크리스트 마지막 항목을 이렇게 뒀다.</p>
+<blockquote>*&quot;Would a competent maintainer accept this as a bug report, or close it as noise?&quot;*</blockquote>
+<p><strong>주안점</strong>: 판정 기준을 추상적인 &quot;위험도&quot;가 아니라 <strong>실무 수용성</strong>으로</p>
+<p>옮기면, &quot;이론적으로는 위험하지만 현실적으로 무해한&quot; 코드를 정확히</p>
+<p>하향시킬 수 있다. 또한 체크리스트 1번(라인 대조)은 환각 탐지 스킬로</p>
+<p>따로 분리해서, Analyst 의 주장이 실제 코드와 일치하는지부터 기계적으로</p>
+<p>검사하게 했다.</p>
+<h3 id="3-4-reporter-보지-않는-것도-스킬이다">3-4. Reporter — &quot;보지 않는 것도 스킬이다&quot;</h3>
+<p>Reporter 는 원본 소스에 접근하지 않는다는 제약 자체가 스킬 설계다.</p>
+<p><strong>주안점</strong>: 보고서를 쓰는 데 소스가 필요 없다. 필요한 정보는 이미</p>
+<p>Analyst/Verifier 가 구조화해 뽑아놨다. 여기에 소스를 다시 주면</p>
+<p>① 토큰이 배치당 수만 개 낭비되고, ② Reporter 가 소스를 보고</p>
+<p><strong>새로운(검증 안 된) 취약점을 지어낼 위험</strong>이 생긴다. &quot;필요한 정보만</p>
+<p>정확히 주고, 나머지는 원천 차단한다&quot;는 것도 스킬 설계의 일부다.</p>
+<hr>
+<h2 id="4-토큰-절약-방안-설계와-도입-이유">4. 토큰 절약 방안 — 설계와 도입 이유</h2>
+<h3 id="4-1-실측-결과">4-1. 실측 결과</h3>
+<table><tbody>
+<tr><th>배치</th><th>파일 통째로 넣을 때</th><th>Sieve 통과 후</th><th>절감률</th></tr>
+<tr><td>batch1 <code>host_applications</code></td><td>413,043 tok</td><td>46,253 tok</td><td><strong>88.80%</strong></td></tr>
+<tr><td>batch2 <code>containers</code></td><td>408,078 tok</td><td>22,214 tok</td><td><strong>94.56%</strong></td></tr>
+<tr><td>batch3 <code>interface</code></td><td>702,781 tok</td><td>26,970 tok</td><td><strong>96.16%</strong></td></tr>
+<tr><td><strong>합계</strong></td><td><strong>1,523,902 tok</strong></td><td><strong>95,437 tok</strong></td><td><strong>93.74%</strong></td></tr>
+</tbody></table>
+<h3 id="4-2-도입한-9가지-기법">4-2. 도입한 9가지 기법</h3>
+<p><strong>① 결정론적 사전 필터 (가장 큰 효과)</strong></p>
+<p>싱크가 하나도 없는 함수는 LLM 에 보내지 않는다. 3,687개 함수 중 싱크가</p>
+<p>걸린 건 428개(11.6%)뿐이다.</p>
+<blockquote>*도입 이유* — LLM 이 잘하는 건 &quot;이 코드가 위험한가?&quot;를 판단하는 것이지,</blockquote>
+<blockquote>&quot;strcpy 가 어디 있나?&quot;를 찾는 게 아니다. 찾는 일은 정규식이 0원에 한다.</blockquote>
+<p><strong>② 함수 단위 슬라이싱</strong></p>
+<p>파일이 아니라 함수를 보낸다. 3,000줄짜리 파일도 문제되는 함수 하나만</p>
+<p>90줄로 추려서 보낸다.</p>
+<blockquote>*도입 이유* — C 취약점의 대부분은 한 함수 안에서 판정 가능하다.</blockquote>
+<blockquote>파일 전체를 보내는 건 40배의 비용을 내고 40배의 노이즈를 사는 것이다.</blockquote>
+<p><strong>③ 긴 함수 축약(shrink)</strong></p>
+<p>160줄 넘는 함수는 싱크 라인 기준 위아래 25줄 + 시그니처 8줄만 남기고</p>
+<p>나머지는 <code>/* ... N lines omitted ... */</code> 로 접는다.</p>
+<blockquote>*도입 이유* — 생략 구간을 명시적으로 표시해야 LLM 이 &quot;경계 검사가</blockquote>
+<blockquote>없다&quot;고 잘못 단정하지 않는다. 안 그러면 잘려나간 부분에 있던 검사를</blockquote>
+<blockquote>못 봐서 오탐을 만든다.</blockquote>
+<p><strong>④ 정규화 해시 중복 제거</strong></p>
+<p>주석/공백을 제거한 뒤 SHA-1 을 떠서, 같은 코드가 여러 파일에 복제돼</p>
+<p>있으면 한 번만 분석한다. batch1 에서 4건이 접혔다.</p>
+<blockquote>*도입 이유* — 임베디드 코드베이스는 복붙이 많다. 같은 걸 두 번</blockquote>
+<blockquote>분석할 이유가 없다. (단, 미세하게 다른 복제본은 해시가 갈려 각각</blockquote>
+<blockquote>분석됐고 — 오히려 다행이었다. 실제로 두 판본 모두 개별 패치가</blockquote>
+<blockquote>필요한 상태였다.)</blockquote>
+<p><strong>⑤ 2단계 모델 라우팅</strong></p>
+<p>Analyst = Haiku 4.5(후보 전량 1차 분류), Verifier = Sonnet 4.6(고위험만</p>
+<p>정밀 검증).</p>
+<blockquote>*도입 이유* — 후보의 상당수는 &quot;명백히 아님&quot;이라 값싼 모델로 충분하다.</blockquote>
+<blockquote>비싼 모델은 판단이 어려운 소수에만 쓴다.</blockquote>
+<p><strong>⑥ 프롬프트 캐싱</strong></p>
+<p>공통 규칙집(system, 약 400토큰)에 <code>cache_control: ephemeral</code> 지정.</p>
+<blockquote>*도입 이유* — 배치당 40회 호출이면 규칙집만 16,000토큰이 중복된다.</blockquote>
+<blockquote>한 번만 내고 재사용하는 게 맞다.</blockquote>
+<p><strong>⑦ 디스크 캐시</strong></p>
+<p><code>(모델+system+user)</code> 해시로 캐시 파일 저장. 같은 코드를 다시 스캔하면</p>
+<p>API 를 안 탄다.</p>
+<blockquote>*도입 이유* — SAST 는 커밋마다 도는 도구다. 전체 재분석은 낭비다.</blockquote>
+<p><strong>⑧ 출력 토큰 상한 + JSON 강제</strong></p>
+<p>&quot;Return ONE JSON object. No markdown, no prose.&quot; 를 못 박고 <code>max_tokens</code></p>
+<p>로 물리적 상한(Analyst 700 / Verifier 900)을 건다.</p>
+<blockquote>*도입 이유* — 출력 토큰이 입력보다 비싸다. JSON 강제는 비용 절감과</blockquote>
+<blockquote>파싱 안정성을 동시에 얻는다.</blockquote>
+<p><strong>⑨ Reporter 에게 소스를 안 준다</strong></p>
+<p>Reporter 는 구조화된 findings JSON 만 받는다.</p>
+<blockquote>*도입 이유* — 보고서 작성에 소스가 필요 없다. 여기에 소스를 다시</blockquote>
+<blockquote>넣으면 배치당 수만 토큰이 그냥 사라진다.</blockquote>
+<h3 id="4-3-절약과-정확도의-트레이드오프">4-3. 절약과 정확도의 트레이드오프</h3>
+<table><tbody>
+<tr><th>기법</th><th>놓칠 수 있는 것</th><th>완화책</th></tr>
+<tr><td>싱크 기반 필터</td><td>커스텀 래퍼 함수를 통한 취약점</td><td>규칙집에 사내 래퍼 추가 가능</td></tr>
+<tr><td>함수 단위 슬라이싱</td><td>함수 간 데이터 흐름 취약점</td><td>Context Broker 로 호출자 on-demand 조회</td></tr>
+<tr><td>shrink</td><td>생략 구간의 경계 검사</td><td>생략을 명시 표기 → LLM 이 <code>needs_context</code> 선언</td></tr>
+<tr><td>해시 dedup</td><td>미세하게 다른 복제본</td><td>정규화 강도를 낮춰 의도적으로 보수적</td></tr>
+</tbody></table>
+<p>이 도구는 <strong>완전성(completeness)보다 정밀도(precision)</strong> 를 택했다.</p>
+<p>오탐 100건은 아무도 안 읽지만, 확정 8건은 오늘 고칠 수 있기 때문이다.</p>
+<hr>
+<h2 id="5-작성-시-사용한-프롬프트">5. 작성 시 사용한 프롬프트</h2>
+<h3 id="5-1-런타임-프롬프트-실제-api-호출에-사용">5-1. 런타임 프롬프트 (실제 API 호출에 사용)</h3>
+<p><strong>공통 시스템 규칙집</strong> — 모든 호출의 <code>system</code> 블록, 프롬프트 캐싱 대상</p>
+<pre>
+You are a static application security testing (SAST) engine for C/C++ code in an
+embedded Linux userland stack.
+
+## Ground rules
+1. You only see a SLICE of the program. Never assert a vulnerability you cannot
+   point at with a concrete line number in the slice you were given.
+2. If safety depends on a caller you cannot see, the verdict is `needs_context`,
+   NOT `vulnerable`.
+3. Do not invent identifiers. Every symbol you name must appear verbatim in the
+   slice.
+4. Prefer FEWER, HIGHER-CONFIDENCE findings.
+5. Embedded context matters: fixed-size stack buffers fed by device/IPC data are
+   real risks; a memcpy whose length is a compile-time sizeof is not.
+
+## Output contract
+Return ONE JSON object. No markdown, no prose, no explanation outside the JSON.
+</pre>
+<blockquote>규칙 2 가 환각 억제의 핵심이다. &quot;모른다&quot;고 말할 명예로운 퇴로를 주지</blockquote>
+<blockquote>않으면 LLM 은 빈칸을 지어내서 채운다.</blockquote>
+<p><strong>Analyst 프롬프트 핵심부</strong></p>
+<pre>
+Ask yourself, in order:
+1. Where does the data COME FROM?
+2. Is there a bound check between source and sink, INSIDE this slice?
+3. Is the bound derived from the DESTINATION&#x27;s size, or the SOURCE&#x27;s data?
+4. If you cannot answer (1), the verdict is needs_context.
+</pre>
+<p><strong>Verifier 프롬프트 핵심부</strong></p>
+<pre>
+Another agent claimed the finding below is a vulnerability. Your job is to TRY TO
+DISPROVE it. You are rewarded for correctly rejecting false positives, not for
+agreeing.
+
+Checklist:
+- Does sink_line actually contain the sink? If not → REJECT as hallucination.
+- Is the bound derived from the destination&#x27;s size?
+- Is the input actually attacker-controlled, or a compile-time constant?
+- Would a competent maintainer accept this as a bug report, or close it as noise?
+</pre>
+<p><strong>Reporter 프롬프트 핵심부</strong></p>
+<pre>
+Runs ONCE per batch, never sees raw source code — only structured findings.
+Rules: do not add findings not in findings_json. If confirmed == 0, say so
+plainly instead of padding.
+</pre>
+<h3 id="5-2-도구를-설계하려고-스스로에게-던진-메타-프롬프트">5-2. 도구를 설계하려고 스스로에게 던진 메타 프롬프트</h3>
+<p>과제가 요구한 &quot;작성 시 요청했던 프롬프트&quot;에 해당하는, 실제 설계 과정에서</p>
+<p>스스로에게 던진 질문들이다.</p>
+<table><tbody>
+<tr><th>단계</th><th>스스로 던진 질문</th><th>결과로 이어진 설계</th></tr>
+<tr><td>문제 정의</td><td>*&quot;청킹 전략을 고민하는 대신, &#x27;무엇을 넣지 않을 것인가&#x27;로 문제를 재정의하면?&quot;*</td><td>Sieve(사전 필터)를 1급 시민으로 승격 → 토큰 93.7% 감소</td></tr>
+<tr><td>역할 분리</td><td>*&quot;에이전트를 나누기 위해 나누는 함정을 피하려면, 서로 다른 인센티브를 줄 수 없나?&quot;*</td><td>Analyst=찾는 인센티브 / Verifier=기각하는 인센티브</td></tr>
+<tr><td>환각 억제</td><td>*&quot;환각은 정보가 부족한데 답을 내야 할 때 생긴다. &#x27;모른다&#x27;를 정당한 답으로 만들면?&quot;*</td><td><code>needs_context</code> verdict + 라인 대조 기각 규칙</td></tr>
+<tr><td>배치 설계</td><td>*&quot;위협 모델이 같은 코드끼리 묶으면 배치 단위로 일관된 판단이 가능하지 않을까?&quot;*</td><td>입력 접점/미디어 파서/IPC 경계 3계층 분할</td></tr>
+<tr><td>자기 검증</td><td>*&quot;내 도구가 찾았다는 취약점을, 실제 소스를 열어 라인 하나하나 대조하면 몇 건이 살아남나?&quot;*</td><td>모든 상수·매크로 정의를 직접 열어서 대조 (예: <code>CEC_MAX_XMIT_LENGTH</code>, <code>vcos_assert</code> 정의)</td></tr>
+<tr><td>최종 점검</td><td>*&quot;이 리포트를 메인테이너에게 보내면 몇 건이 invalid 로 닫힐까? 닫힐 것 같은 건 미리 빼자.&quot;*</td><td>15건 중 4건 기각, 3건 하향 → 확정 8건만 최종 보고</td></tr>
+</tbody></table>
+<hr>
+<h2 id="6-산출물-분석-결과">6. 산출물 — 분석 결과</h2>
+<h3 id="6-1-배치별-스캔-통계">6-1. 배치별 스캔 통계</h3>
+<table><tbody>
+<tr><th>배치</th><th>계층</th><th>파일</th><th>슬라이싱 함수</th><th>싱크 적중</th><th>Sieve 통과</th><th>중복제거</th><th>저점수 폐기</th><th>토큰 절감</th></tr>
+<tr><td>batch1</td><td>host_applications</td><td>75</td><td>764</td><td>122</td><td>80</td><td>4</td><td>38</td><td>88.8%</td></tr>
+<tr><td>batch2</td><td>containers</td><td>69</td><td>825</td><td>179</td><td>100</td><td>0</td><td>79</td><td>94.6%</td></tr>
+<tr><td>batch3</td><td>interface</td><td>132</td><td>2,098</td><td>127</td><td>45</td><td>0</td><td>82</td><td>96.2%</td></tr>
+</tbody></table>
+<h3 id="6-2-확정된-취약점-8건">6-2. 확정된 취약점 (8건)</h3>
+<table><tbody>
+<tr><th>ID</th><th>위치</th><th>CWE</th><th>심각도</th><th>핵심 근거</th></tr>
+<tr><td>B1-01</td><td><code>models.c:243</code> (hello_teapot)</td><td>CWE-787/121</td><td><strong>치명적</strong></td><td>폭 지정자 없는 <code>%s</code> 로 256바이트를 32바이트 필드에 복사, 경계검사가 쓰기 이후 실행</td></tr>
+<tr><td>B1-02</td><td><code>models.c:252</code></td><td>CWE-134</td><td>높음</td><td><code>printf(s)</code> — 파일 내용이 그대로 포맷 문자열로 들어감</td></tr>
+<tr><td>B1-03</td><td><code>models.c:258</code></td><td>CWE-787/1284</td><td>높음</td><td>정점 개수 상한 검사 없이 힙 영역 연속 침범 가능</td></tr>
+<tr><td>B1-04</td><td><code>models.c:236</code></td><td>CWE-125</td><td>보통</td><td>빈 줄일 때 <code>strlen(s)-1</code> 언더플로</td></tr>
+<tr><td>B1-05</td><td><code>gl_scenes/models.c:249</code></td><td>CWE-787/134</td><td><strong>치명적</strong></td><td>위 결함이 다른 파일에 그대로 복제</td></tr>
+<tr><td>B3-01</td><td><code>vcilcs.c:1048</code></td><td>CWE-787/617</td><td>높음</td><td>IPC 헤더/트레일러 길이가 목적지 크기와 비교 안 됨</td></tr>
+<tr><td>B3-02</td><td><code>vcilcs.c:1014</code></td><td>CWE-191</td><td>높음</td><td>뺄셈 결과가 음수가 될 수 있는 부호있는 길이 계산</td></tr>
+<tr><td>B3-03</td><td><code>vcilcs.c:1058</code></td><td>CWE-787</td><td>높음</td><td>경계 검사가 릴리스 빌드에서 사라지는 <code>vcos_assert</code> 에만 의존</td></tr>
+</tbody></table>
+<h3 id="6-3-오탐-억제-사례-기각-4건-하향-3건">6-3. 오탐 억제 사례 (기각 4건, 하향 3건)</h3>
+<p>Verifier 가 실제로 오탐을 걸러낸 대표 사례.</p>
+<li><strong><code>vc_cec_send_message</code> 의 <code>sprintf</code> 루프</strong> — <code>CEC_MAX_XMIT_LENGTH=15</code></li>
+<p>  상수를 추적하니 최대 50바이트로 <code>char s[96]</code> 에 안전하게 들어감 → <strong>기각</strong></p>
+<li><strong><code>qsynth_get_duration</code></strong> — 파일에서 읽은 길이를 malloc 에 쓰지만</li>
+<p>  <code>len &gt; (1&lt;&lt;20)</code> 상한이 단락 평가로 먼저 걸림 → <strong>기각</strong></p>
+<li><strong><code>do_autosusptest</code></strong> — <code>argv[2]</code> 접근 전 <code>argc != 4</code> 로 <code>exit(1)</code> → <strong>기각</strong></li>
+<li><strong><code>io_net_open_capture_file</code>, <code>load_library</code>, <code>simple_reader_open</code></strong> —</li>
+<p>  현재는 계산이 정확히 들어맞아 안전하지만, 여유가 <strong>0바이트</strong>라 상수</p>
+<p>  변경 시 즉시 취약해짐 → <strong>하향</strong>(기각이 아니라 계속 추적 대상으로 유지)</p>
+<p>산출물 원본: <code>out/report.md</code>, <code>out/report.html</code>, <code>out/llm_stage_results.json</code></p>
+<hr>
+<h2 id="7-기존-도구와의-차별점">7. 기존 도구와의 차별점</h2>
+<h3 id="7-1-한-장-비교">7-1. 한 장 비교</h3>
+<table><tbody>
+<tr><th></th><th>Cppcheck / Flawfinder</th><th>Coverity / CodeQL</th><th>ChatGPT 에 코드 붙여넣기</th><th><strong>ai-sast-userland</strong></th></tr>
+<tr><td>탐지 방식</td><td>패턴 매칭</td><td>컴파일 + 데이터플로</td><td>LLM 단독 판단</td><td>규칙 매칭 → LLM 판정 → LLM 반박</td></tr>
+<tr><td>빌드 필요</td><td>불필요</td><td><strong>필요</strong></td><td>불필요</td><td>불필요</td></tr>
+<tr><td>대용량 저장소</td><td>가능</td><td>가능</td><td><strong>불가능</strong>(컨텍스트 초과)</td><td>가능 (93.7% 사전 축소)</td></tr>
+<tr><td>오탐 억제</td><td>약함</td><td>강함</td><td><strong>매우 약함</strong></td><td>적대적 Verifier 로 분리</td></tr>
+<tr><td>환각 위험</td><td>없음</td><td>없음</td><td><strong>높음</strong></td><td>라인 대조 + <code>needs_context</code></td></tr>
+<tr><td>판단 근거 설명</td><td>규칙 ID만</td><td>경로 추적</td><td>자연어(검증 불가)</td><td>자연어 + 대조 가능한 라인 번호</td></tr>
+<tr><td>커스텀 프레임워크 대응</td><td>규칙 추가</td><td>쿼리 작성(난이도 높음)</td><td>가능</td><td><code>SINK_RULES</code> 한 줄 추가</td></tr>
+<tr><td>비용</td><td>무료</td><td>라이선스 고가</td><td>사실상 불가</td><td>배치당 약 3만 토큰</td></tr>
+</tbody></table>
+<h3 id="7-2-핵심-차별점-3가지">7-2. 핵심 차별점 3가지</h3>
+<p><strong>① &quot;찾는 것&quot;과 &quot;판단하는 것&quot;을 분리했다</strong></p>
+<p>Flawfinder 는 <code>strcpy</code> 를 전부 보고한다(userland 에 22곳, 대부분 안전).</p>
+<p>LLM 에 코드를 그냥 던지면 컨텍스트 부족 상태에서 판단을 강요당해</p>
+<p>없는 취약점을 지어낸다. 이 도구는 정규식이 428개 함수를 0원에 골라내고,</p>
+<p>LLM 은 그중 판단이 필요한 것만 본다. <code>vc_cec_send_message</code> 는 Flawfinder</p>
+<p>라면 무조건 보고했을 코드지만, 이 도구는 상수를 추적해 안전을 증명하고</p>
+<p>기각했다.</p>
+<p><strong>② LLM 이 LLM 을 반대신문한다</strong></p>
+<p>일반적인 &quot;AI SAST&quot; 는 LLM 한 번 호출하고 끝나 그 출력이 검증되지 않는다.</p>
+<p>이 도구의 Verifier 는 Analyst 의 주장을 반박하도록 설계돼 있고, 인용한</p>
+<p>라인이 실제 코드와 다르면 환각으로 즉시 기각하는 기계적 대조 규칙이</p>
+<p>걸려 있다. 판정도 3단(확정/하향/기각)이라 &quot;지금은 안전하지만 여유가</p>
+<p>0바이트&quot;인 코드를 표현할 수 있다.</p>
+<p><strong>③ 릴리스 빌드의 실체를 본다</strong></p>
+<p><code>vcilcs.c</code> 는 <code>vcos_assert</code> 를 경계 검사처럼 쓰지만, 실제 매크로 정의를</p>
+<p>열어보면 릴리스 빌드에서 <code>(void)0</code> 이다. 패턴 매칭 도구는 이름만 보고</p>
+<p>&quot;검증됨&quot;으로 처리하거나 아예 모른다. 이 도구는 Verifier 가 Context</p>
+<p>Broker 로 매크로 정의를 직접 가져와서 이를 밝혀냈다. &quot;이름이 assert 니까</p>
+<p>검사겠지&quot;를 의심하는 것, 이게 규칙 기반 도구가 못 하는 일이다.</p>
+<h3 id="7-3-솔직한-열세">7-3. 솔직한 열세</h3>
+<li><strong>함수 간 데이터 흐름</strong> — CodeQL 은 전역 호출 그래프로 taint 를</li>
+<p>  추적하지만, 이 도구는 함수 내부가 기본이고 함수 밖은 필요할 때만</p>
+<p>  일부 조회한다. 여러 함수를 거치는 취약점은 놓칠 수 있다.</p>
+<li><strong>재현성</strong> — 규칙 기반 도구는 항상 같은 출력을 내지만 LLM 단계는</li>
+<p>  그렇지 않다. 디스크 캐시로 같은 코드는 결과를 고정시켰지만 근본</p>
+<p>  해결은 아니다.</p>
+<li><strong>컴파일 정보 부재</strong> — 어떤 <code>#ifdef</code> 가 실제로 켜지는지 모른다.</li>
+<p>그래서 이 도구의 현실적인 자리는 **Cppcheck 대체가 아니라 &quot;1차 도구가</p>
+<p>뱉은 노이즈를 사람 대신 읽어주는 2차 필터&quot;** 다.</p>
+<hr>
+<h2 id="8-한계와-향후-과제">8. 한계와 향후 과제</h2>
+<li>데이터 흐름 분석이 함수 내부로 한정된다. 함수 간 흐름은 Verifier 가</li>
+<p>  Context Broker 로 필요할 때만 부분 조회한다.</p>
+<li>사내 커스텀 래퍼 함수(<code>safe_copy()</code> 같은)는 <code>config.SINK_RULES</code> 에</li>
+<p>  직접 추가해야 인식된다.</p>
+<li>이번 실행에서는 API 키가 없는 환경이라 Analyst/Verifier 를 실제 API</li>
+<p>  호출 대신 동일 프롬프트 로직을 수동 적용해 산출했다. 모든 판정 근거</p>
+<p>  (라인 번호·상수·매크로 정의)는 실제 소스를 직접 대조해 확인한 값이며,</p>
+<p>  키가 있는 환경에서는 <code>run.py</code> 실행만으로 동일 파이프라인이 자동</p>
+<p>  수행된다.</p>
+<li>완전성보다 정밀도를 택한 도구다. 오탐을 줄이는 대신 미탐이 존재할 수</li>
+<p>  있다.</p>
+<hr>
+<p>*원본 코드 및 세부 문서는 <code>ai-sast-userland</code> 저장소 참고</p>
+<p>(<code>sastagent/</code>, <code>docs/</code>, <code>out/</code>).*</p></div></html>
