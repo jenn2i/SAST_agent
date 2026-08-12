@@ -29,3 +29,12 @@ for bid, b in r["batches"].items():
     print(f"  tokens naive={t['naive_whole_files_tokens']:,} -> "
           f"sieved={t['sieved_prompt_tokens']:,} ({t['reduction_pct']}% 절감)")
 print(f"\nelapsed={r['elapsed_sec']}s  pending_llm_calls={r['pending_llm_calls']}")
+
+cov = r["coverage"]
+if cov["uncovered_files"]:
+    print(f"\n[WARN] 배치 범위 밖 파일 {len(cov['uncovered_files'])}개 "
+          f"(읽기 실패 아님, 배치 include 경로 밖):")
+    for f in cov["uncovered_files"]:
+        print(f"  - {f}")
+else:
+    print("\n커버리지: 인덱싱된 모든 파일이 배치에 포함됨")

@@ -21,7 +21,21 @@ def run(cfg):
     parts = scout.partition(index, cfg.batches)
     broker = agents.ContextBroker(cfg.repo, index)
 
-    report = dict(repo=cfg.repo, repo_summary=repo_summary, batches={})
+    # 커버리지 점검: 어떤 배치에도 속하지 않는 파일이 있는지 명시적으로 기록한다.
+    # (배치 include 경로가 아키텍처 계층 3개뿐이라, 그 경계 밖 디렉토리는 스캔에서 빠진다.)
+    covered = set()
+    for part in parts.values():
+        covered.update(f["rel"] for f in part["files"])
+    uncovered = sorted(f["rel"] for f in index if f["rel"] not in covered)
+
+    report = dict(repo=cfg.repo, repo_summary=repo_summary, batches={},
+                  coverage=dict(indexed_files=len(index),
+                                covered_files=len(covered),
+                                uncovered_files=uncovered,
+                                note="uncovered_files 는 읽기 실패가 아니라, 3개 배치의 "
+                                     "include 경로(host_applications/, containers/, "
+                                     "interface/) 밖에 있어 이번 배치 계획에서 "
+                                     "제외된 파일이다."))
 
     for bid, part in parts.items():
         meta, files = part["meta"], part["files"]
@@ -71,9 +85,10 @@ def run(cfg):
 
     json.dump(report, open(os.path.join(cfg.out_dir, "result.json"), "w"),
               ensure_ascii=False, indent=1)
-    # offline 모드: 실제로 보냈을 프롬프트를 그대로 덤프 (과제 산출물)
+    # offline 모드: 실제로 보냈을 프롬프트를 '전부' 그대로 덤프 (과제 산출물)
+    # 과거 버전은 앞 50개만 저장했으나, "전체 납품" 요건을 위해 전량 저장으로 변경.
     if llm.pending:
-        json.dump(llm.pending[:50],
+        json.dump(llm.pending,
                   open(os.path.join(cfg.out_dir, "pending_prompts.json"), "w"),
                   ensure_ascii=False, indent=1)
     return report

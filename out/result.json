@@ -6807,6 +6807,14 @@
    }
   }
  },
+ "coverage": {
+  "indexed_files": 277,
+  "covered_files": 276,
+  "uncovered_files": [
+   "helpers/dtoverlay/dtoverlay.c"
+  ],
+  "note": "uncovered_files 는 읽기 실패가 아니라, 3개 배치의 include 경로(host_applications/, containers/, interface/) 밖에 있어 이번 배치 계획에서 제외된 파일이다."
+ },
  "ledger": {
   "input_tokens": 0,
   "output_tokens": 0,
@@ -6816,5 +6824,5 @@
  },
  "ledger_rows": [],
  "pending_llm_calls": 123,
- "elapsed_sec": 2.27
+ "elapsed_sec": 2.28
 }

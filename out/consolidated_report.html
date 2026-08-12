@@ -54,13 +54,16 @@ a:hover{text-decoration:underline}
 <tr><td>슬라이싱된 함수</td><td>3,687개</td></tr>
 <tr><td>위험 싱크 적중 함수</td><td>428개 (11.6%)</td></tr>
 <tr><td>Sieve 통과 후보</td><td>225개</td></tr>
-<tr><td>파일 통째로 넣을 때 예상 토큰</td><td>약 1,523,902</td></tr>
-<tr><td>실제 LLM 프롬프트 토큰</td><td>약 95,437 (<strong>93.7% 절감</strong>)</td></tr>
+<tr><td>파일 통째로 넣을 때 예상 토큰 (bytes 기반 추정)</td><td>약 1,523,902</td></tr>
+<tr><td>Sieve 통과 후 프롬프트 페이로드 추정 토큰</td><td>약 95,437 (<strong>93.7% 페이로드 절감 추정</strong>)</td></tr>
 <tr><td>Scout + Sieve 소요 시간</td><td>2.13초 (LLM 호출 0회)</td></tr>
 <tr><td>정밀 판정 건수</td><td>15건</td></tr>
 <tr><td>확정 / 하향 / 기각</td><td>8건 / 3건 / 4건</td></tr>
 <tr><td>심각도 분포</td><td>치명적 2 · 높음 5 · 보통 1 · 낮음 3</td></tr>
 </tbody></table>
+<p>*토큰 수치는 Sieve 통과 코드의 분량 기준 추정치이며, 판정 결과는</p>
+<p>API 실행 대신 동일 프롬프트 절차를 수동 적용해 도출했다 — 방법론</p>
+<p>상세는 8장 참고.*</p>
 <h3 id="가장-중요한-발견-두-가지">가장 중요한 발견 두 가지</h3>
 <li><strong><code>hello_teapot/models.c</code> Wavefront <code>.obj</code> 로더</strong> — 경계 검사 없는</li>
 <p>  <code>sscanf(&quot;%s&quot;)</code> 로 256바이트 파일 라인을 32바이트 필드에 복사 (치명적).</p>
@@ -194,14 +197,21 @@ dict(id=&quot;MEM.STRCPY&quot;, pattern=r&quot;\b(strcpy|strcat|stpcpy)\s*\(&quo
 <p>정확히 주고, 나머지는 원천 차단한다&quot;는 것도 스킬 설계의 일부다.</p>
 <hr>
 <h2 id="4-토큰-절약-방안-설계와-도입-이유">4. 토큰 절약 방안 — 설계와 도입 이유</h2>
-<h3 id="4-1-실측-결과">4-1. 실측 결과</h3>
+<h3 id="4-1-페이로드-크기-절감-추정치">4-1. 페이로드 크기 절감 (추정치)</h3>
+<p>아래 수치는 <code>bytes(코드) / 3.5</code> 로 근사한 &quot;프롬프트에 넣을 코드 분량&quot;</p>
+<p>비교로, Sieve 단계가 코드 분량을 얼마나 줄이는지를 보여준다. 실제 API</p>
+<p>청구 토큰(system prompt, 출력 토큰, Context Broker 조회분 포함)은</p>
+<p>API 실행 시 <code>result.json.ledger</code> 에 별도로 기록된다.</p>
 <table><tbody>
-<tr><th>배치</th><th>파일 통째로 넣을 때</th><th>Sieve 통과 후</th><th>절감률</th></tr>
+<tr><th>배치</th><th>파일 통째로 넣을 때 (추정)</th><th>Sieve 통과 후 (추정)</th><th>페이로드 절감률</th></tr>
 <tr><td>batch1 <code>host_applications</code></td><td>413,043 tok</td><td>46,253 tok</td><td><strong>88.80%</strong></td></tr>
 <tr><td>batch2 <code>containers</code></td><td>408,078 tok</td><td>22,214 tok</td><td><strong>94.56%</strong></td></tr>
 <tr><td>batch3 <code>interface</code></td><td>702,781 tok</td><td>26,970 tok</td><td><strong>96.16%</strong></td></tr>
 <tr><td><strong>합계</strong></td><td><strong>1,523,902 tok</strong></td><td><strong>95,437 tok</strong></td><td><strong>93.74%</strong></td></tr>
 </tbody></table>
+<p>실제 API 토큰 사용량은 <code>sastagent/llm.py</code> 의 <code>TokenLedger</code> 가 자동으로</p>
+<p>기록하도록 구현돼 있으며, API 실행 후에는 이 표를 실측치로 교체할 수</p>
+<p>있다.</p>
 <h3 id="4-2-도입한-9가지-기법">4-2. 도입한 9가지 기법</h3>
 <p><strong>① 결정론적 사전 필터 (가장 큰 효과)</strong></p>
 <p>싱크가 하나도 없는 함수는 LLM 에 보내지 않는다. 3,687개 함수 중 싱크가</p>
@@ -322,12 +332,19 @@ plainly instead of padding.
 </tbody></table>
 <hr>
 <h2 id="6-산출물-분석-결과">6. 산출물 — 분석 결과</h2>
+<p>이 장의 판정 결과는 <code>out/llm_stage_results.json</code> 기준이며, 검증 방식은</p>
+<p>8장에 정리했다.</p>
 <h3 id="6-1-배치별-스캔-통계">6-1. 배치별 스캔 통계</h3>
+<p>277개 인덱싱 파일 중 276개가 3개 배치(host_applications/containers/</p>
+<p>interface)에 포함됐다. 나머지 1개(<code>helpers/dtoverlay/dtoverlay.c</code>)는</p>
+<p>현재 배치 정의의 include 경로 밖에 있어 이번 분석 범위에서 제외됐고,</p>
+<p>배치 4(<code>helpers/</code>)를 추가하면 커버리지 100%가 된다.</p>
 <table><tbody>
-<tr><th>배치</th><th>계층</th><th>파일</th><th>슬라이싱 함수</th><th>싱크 적중</th><th>Sieve 통과</th><th>중복제거</th><th>저점수 폐기</th><th>토큰 절감</th></tr>
+<tr><th>배치</th><th>계층</th><th>파일</th><th>슬라이싱 함수</th><th>싱크 적중</th><th>Sieve 통과</th><th>중복제거</th><th>저점수 폐기</th><th>페이로드 절감</th></tr>
 <tr><td>batch1</td><td>host_applications</td><td>75</td><td>764</td><td>122</td><td>80</td><td>4</td><td>38</td><td>88.8%</td></tr>
 <tr><td>batch2</td><td>containers</td><td>69</td><td>825</td><td>179</td><td>100</td><td>0</td><td>79</td><td>94.6%</td></tr>
 <tr><td>batch3</td><td>interface</td><td>132</td><td>2,098</td><td>127</td><td>45</td><td>0</td><td>82</td><td>96.2%</td></tr>
+<tr><td>*(미포함)*</td><td>helpers/</td><td>1</td><td>–</td><td>–</td><td>–</td><td>–</td><td>–</td><td>–</td></tr>
 </tbody></table>
 <h3 id="6-2-확정된-취약점-8건">6-2. 확정된 취약점 (8건)</h3>
 <table><tbody>
@@ -398,15 +415,26 @@ plainly instead of padding.
 <p>뱉은 노이즈를 사람 대신 읽어주는 2차 필터&quot;** 다.</p>
 <hr>
 <h2 id="8-한계와-향후-과제">8. 한계와 향후 과제</h2>
+<h3 id="8-1-실행-방법론-노트">8-1. 실행 방법론 노트</h3>
+<li><strong>API 실행 여부</strong> — 이번 산출물은 <code>ANTHROPIC_API_KEY</code> 가 없는 환경에서</li>
+<p>  만들어, 파이프라인은 <code>--offline</code> 모드로 실행됐다(<code>out/result.json</code></p>
+<p>  의 <code>ledger.calls = 0</code>). 6장의 확정 8건은 Analyst/Verifier 프롬프트</p>
+<p>  절차를 작성자가 동일하게 적용해 도출한 결과(<code>out/llm_stage_results.json</code>)</p>
+<p>  다. API 키가 있는 환경에서 <code>--offline</code> 없이 <code>run.py</code> 를 실행하면</p>
+<p>  같은 파이프라인이 API 로 자동 수행되어 동일 형식의 결과를 낸다.</p>
+<li><strong>토큰 절감 수치의 성격</strong> — &quot;93.7%&quot;는 코드 바이트 길이 기반 추정치이며,</li>
+<p>  API 실행 시 <code>ledger.input_tokens</code>/<code>output_tokens</code> 로 실측치를 별도</p>
+<p>  확인할 수 있다.</p>
+<li><strong>프롬프트 전량 보존</strong> — Analyst/Verifier 에 전달될 예정이었던 123건의</li>
+<p>  프롬프트는 <code>out/pending_prompts.json</code> 에 전량 저장되어 있다.</p>
+<li><strong>배치 커버리지</strong> — 인덱싱된 277개 파일 중 276개가 3개 배치에</li>
+<p>  포함된다. <code>helpers/dtoverlay/dtoverlay.c</code> 1개는 현재 배치 정의의</p>
+<p>  include 경로 밖에 있어 제외됐으며, <code>result.json.coverage</code> 에 기록된다.</p>
+<h3 id="8-2-설계상-한계">8-2. 설계상 한계</h3>
 <li>데이터 흐름 분석이 함수 내부로 한정된다. 함수 간 흐름은 Verifier 가</li>
 <p>  Context Broker 로 필요할 때만 부분 조회한다.</p>
 <li>사내 커스텀 래퍼 함수(<code>safe_copy()</code> 같은)는 <code>config.SINK_RULES</code> 에</li>
 <p>  직접 추가해야 인식된다.</p>
-<li>이번 실행에서는 API 키가 없는 환경이라 Analyst/Verifier 를 실제 API</li>
-<p>  호출 대신 동일 프롬프트 로직을 수동 적용해 산출했다. 모든 판정 근거</p>
-<p>  (라인 번호·상수·매크로 정의)는 실제 소스를 직접 대조해 확인한 값이며,</p>
-<p>  키가 있는 환경에서는 <code>run.py</code> 실행만으로 동일 파이프라인이 자동</p>
-<p>  수행된다.</p>
 <li>완전성보다 정밀도를 택한 도구다. 오탐을 줄이는 대신 미탐이 존재할 수</li>
 <p>  있다.</p>
 <hr>
