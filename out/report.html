@@ -1,0 +1,150 @@
+<!doctype html><html lang="ko"><meta charset="utf-8">
+<title>AI SAST — userland 분석 리포트</title>
+<style>
+:root{--ink:#16181d;--mut:#5c6370;--line:#e3e6ea;--acc:#b4451f;--bg:#fbfaf8}
+*{box-sizing:border-box}
+body{margin:0;padding:48px 24px 96px;background:var(--bg);color:var(--ink);
+ font:16px/1.75 -apple-system,"Segoe UI","Noto Sans KR",sans-serif}
+main{max-width:920px;margin:0 auto}
+h1{font-size:30px;line-height:1.3;margin:0 0 8px;letter-spacing:-.02em}
+h2{font-size:21px;margin:56px 0 14px;padding-bottom:8px;border-bottom:2px solid var(--ink)}
+h3{font-size:17px;margin:36px 0 10px;color:var(--acc)}
+h4{font-size:15px;margin:26px 0 6px;padding-left:10px;border-left:3px solid var(--acc)}
+p{margin:10px 0}
+li{margin:5px 0}
+code{background:#eceff3;padding:1px 5px;border-radius:3px;font-size:.87em;
+ font-family:ui-monospace,Menlo,monospace}
+pre{background:#22252b;color:#e6e6e6;padding:14px 16px;border-radius:6px;
+ overflow-x:auto;font-size:13px;line-height:1.6}
+pre code{background:none;color:inherit;padding:0}
+blockquote{margin:14px 0;padding:10px 16px;background:#fff;border-left:3px solid var(--mut);
+ color:var(--mut);font-size:.94em}
+table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13px;background:#fff}
+th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+th{background:#f0f2f5;font-weight:600;white-space:nowrap}
+strong{font-weight:650}
+</style><main><h1>AI 기반 SAST 에이전트 — raspberrypi/userland 분석 리포트</h1>
+<blockquote>대상: <code>github.com/raspberrypi/userland</code> (master) · 도구: <code>ai-sast-userland</code> (multi-agent SAST)</blockquote>
+<h2>1. 한눈에 보기</h2>
+<li>인덱싱한 소스 파일: <strong>277개</strong> (5.2 MB)</li>
+<li>파일을 통째로 LLM 에 넣었을 때 예상 토큰: <strong>약 1,548,769 토큰</strong></li>
+<li>실제 LLM 에 올린 프롬프트 토큰(3개 배치 합계): <strong>약 95,437 토큰</strong> → <strong>93.7% 절감</strong></li>
+<li>판정 결과: 확정 <strong>8건</strong> / 하향 <strong>3건</strong> / 기각 <strong>4건</strong></li>
+<li>심각도 분포: 치명적 2 · 높음 5 · 보통 1 · 낮음 3</li>
+<p>가장 중요한 결과부터 말하면, <code>hello_pi/hello_teapot/models.c</code> 의 Wavefront <code>.obj</code> 로더에서 <strong>경계 검사 없는 `sscanf(&quot;%s&quot;)` 와 포맷 스트링 취약점</strong>이 확인됐고, 같은 결함이 <code>raspicam/gl_scenes/models.c</code> 에 복제되어 있다. 그리고 <code>interface/vmcs_host/vcilcs.c</code> 의 IPC 수신 경로는 <strong>경계 검사를 `vcos_assert` 에 의존</strong>하는데, 이 매크로는 릴리스 빌드에서 <code>(void)0</code> 으로 사라진다.</p>
+<h2>2. 배치별 스캔 통계</h2>
+<table><tbody>
+<tr><th>배치</th><th>계층</th><th>파일</th><th>슬라이싱된 함수</th><th>싱크 적중</th><th>Sieve 통과</th><th>중복 제거</th><th>저점수 폐기</th><th>토큰 절감</th></tr>
+<tr><td><code>batch1</code></td><td>host_applications (사용자 입력 접점)</td><td>75</td><td>764</td><td>122</td><td>80</td><td>4</td><td>38</td><td>88.8%</td></tr>
+<tr><td><code>batch2</code></td><td>containers (미디어 파서)</td><td>69</td><td>825</td><td>179</td><td>100</td><td>0</td><td>79</td><td>94.56%</td></tr>
+<tr><td><code>batch3</code></td><td>interface (IPC/드라이버 브리지)</td><td>132</td><td>2098</td><td>127</td><td>45</td><td>0</td><td>82</td><td>96.16%</td></tr>
+</tbody></table>
+<li><strong>`batch1` 선정 이유</strong>: argv/파일경로 등 외부 입력이 직접 들어오는 CLI 앱 계층</li>
+<li><strong>`batch2` 선정 이유</strong>: 네트워크/파일에서 온 신뢰할 수 없는 미디어 데이터를 파싱하는 계층</li>
+<li><strong>`batch3` 선정 이유</strong>: VCHIQ/IPC 로 프로세스 경계를 넘는 데이터가 오가는 계층</li>
+<h2>3. 배치별 상세 결과</h2>
+<h3>batch1 — host_applications (사용자 입력 접점)</h3>
+<p>후보 80건 중 6건을 정밀 판정했고, <strong>5건이 확정</strong>됐다. 1건은 오탐으로 기각, 0건은 심각도를 낮췄다.</p>
+<table><tbody>
+<tr><th>ID</th><th>파일:라인</th><th>함수</th><th>CWE</th><th>판정</th><th>심각도</th><th>신뢰도</th><th>요약</th></tr>
+<tr><td>B1-01</td><td><code>models.c:243</code></td><td><code>load_wavefront_obj</code></td><td>CWE-787 / CWE-121</td><td>확정</td><td>치명적</td><td>0.95</td><td>L243 의 sscanf 는 폭 지정자 없는 %s 로 최대 256바이트 라인을 name[MAX_MATERIAL_NAME=32]</td></tr>
+<tr><td>B1-05</td><td><code>models.c:249</code></td><td><code>load_wavefront_obj</code></td><td>CWE-787 / CWE-134</td><td>확정</td><td>치명적</td><td>0.90</td><td>B1-01~B1-04 와 동일한 결함이 라인 오프셋 +6 으로 그대로 복제되어 있다 (L249 sscanf, L258 prin</td></tr>
+<tr><td>B1-02</td><td><code>models.c:252</code></td><td><code>load_wavefront_obj</code></td><td>CWE-134</td><td>확정</td><td>높음</td><td>0.92</td><td>L252 와 L302 의 printf(s) 는 파일 내용을 포맷 문자열 자리에 그대로 넣는다.</td></tr>
+<tr><td>B1-03</td><td><code>models.c:258</code></td><td><code>load_wavefront_obj</code></td><td>CWE-787 / CWE-1284</td><td>확정</td><td>높음</td><td>0.85</td><td>L258 의 pv += 3 이 MAX_VERTICES 상한과 비교되지 않아, 정점 수가 많은 .obj 는 m-&gt;data 힙 영</td></tr>
+<tr><td>B1-04</td><td><code>models.c:236</code></td><td><code>load_wavefront_obj</code></td><td>CWE-125</td><td>확정</td><td>보통</td><td>0.80</td><td>L236 의 s[strlen(s)-1] 은 s 가 빈 문자열일 때 strlen(s)-1 이 size_t 언더플로를 일으켜 s[</td></tr>
+<tr><td>B1-06</td><td><code>RaspiStillYUV.c:331</code></td><td><code>parse_cmdline</code></td><td>CWE-120 (제기됨)</td><td>기각</td><td>해당없음</td><td>0.93</td><td>L326 에서 argv 길이를 재고 L331 에서 strncpy 로 복사한다. 목적지 크기가 슬라이스만으로는 불확실하다.</td></tr>
+</tbody></table>
+<h4>B1-01 · 치명적 · CWE-787 / CWE-121</h4>
+<p><strong>위치</strong> <code>host_applications/linux/apps/hello_pi/hello_teapot/models.c:243</code> (<code>load_wavefront_obj</code>)</p>
+<p><strong>근거</strong> models.c:44-50 에서 MAX_MATERIALS=4, MAX_MATERIAL_NAME=32, name 은 char[32] 로 확정된다. L222 의 line 버퍼는 char[257] 이므로 32바이트 필드에 최대 255바이트를 쓸 수 있다. 경계 검사 L244 는 쓰기 이후에 실행되어 material[4] 접근도 허용된다.</p>
+<p><strong>Verifier 의 반론</strong> modelname 이 하드코딩된 내부 에셋이라면 공격자 제어가 아니라는 반론이 가능하다. 그러나 load_wavefront_obj 는 경로를 인자로 받는 범용 로더이며, .obj 는 본질적으로 외부에서 반입되는 에셋 포맷이다.</p>
+<p><strong>조치</strong> sscanf 폭 지정자를 %31s 로 고정하고, 경계 검사 if (m-&gt;num_materials &lt; MAX_MATERIALS) 를 sscanf 호출 앞으로 옮긴다.</p>
+<h4>B1-05 · 치명적 · CWE-787 / CWE-134</h4>
+<p><strong>위치</strong> <code>host_applications/linux/apps/raspicam/gl_scenes/models.c:249</code> (<code>load_wavefront_obj</code>)</p>
+<p><strong>근거</strong> hello_teapot 판본과 raspicam/gl_scenes 판본이 별도로 유지되고 있어, 한쪽만 고치면 다른 쪽이 남는다.</p>
+<p><strong>Verifier 의 반론</strong> Sieve 의 정규화 해시가 두 파일을 접지 못한 것은 주변 코드가 미세하게 달라서다. 즉 &#x27;중복&#x27;이 아니라 &#x27;분기된 복제본&#x27;이며, 각각 개별 수정이 필요하다.</p>
+<p><strong>조치</strong> 두 파일을 공통 모듈로 통합하거나, 최소한 동일 패치를 양쪽에 모두 적용한다.</p>
+<h4>B1-02 · 높음 · CWE-134</h4>
+<p><strong>위치</strong> <code>host_applications/linux/apps/hello_pi/hello_teapot/models.c:252</code> (<code>load_wavefront_obj</code>)</p>
+<p><strong>근거</strong> s 는 L222 fread 로 채워진 파일 라인이며 어떤 살균도 거치지 않는다. %x/%s 로 스택 정보가 노출되고 %n 이 가용한 libc 에서는 임의 쓰기로 이어진다.</p>
+<p><strong>Verifier 의 반론</strong> 직후 vc_assert(0) 이 프로세스를 중단시키므로 영향이 제한된다는 반론이 가능하다. 그러나 printf 는 assert 보다 먼저 평가되며, %n 은 이미 그 시점에 쓰기를 수행한다.</p>
+<p><strong>조치</strong> printf(&quot;%s&quot;, s) 로 교체한다. 동일 패턴이 L302 에도 존재한다.</p>
+<h4>B1-03 · 높음 · CWE-787 / CWE-1284</h4>
+<p><strong>위치</strong> <code>host_applications/linux/apps/hello_pi/hello_teapot/models.c:258</code> (<code>load_wavefront_obj</code>)</p>
+<p><strong>근거</strong> qv/qt/qn/qf 는 L210-213 에서 MAX_VERTICES 간격으로 배치된 단일 블록의 부분 구간이다. pv/pt/pn/pf 증가에 대한 상한 검사가 루프 어디에도 없으므로, 정점이 100000개를 넘으면 인접 구간(텍스처 좌표 영역)부터 침범하고 결국 할당 끝을 넘어간다.</p>
+<p><strong>Verifier 의 반론</strong> m-&gt;data 가 충분히 크게 잡혀 있을 수 있다는 반론. 그러나 L343-344 에서 할당 크기가 정확히 MAX_VERTICES(100000) 기준으로 산정되어 있어 상한은 유한하다.</p>
+<p><strong>조치</strong> 각 증가 지점에서 (pv - qv)/3 &lt; MAX_VERTICES 등 상한을 검사하고 초과 시 파싱을 중단한다.</p>
+<h4>B1-04 · 보통 · CWE-125</h4>
+<p><strong>위치</strong> <code>host_applications/linux/apps/hello_pi/hello_teapot/models.c:236</code> (<code>load_wavefront_obj</code>)</p>
+<p><strong>근거</strong> L236 은 switch(s[0]) 로 빈 줄을 걸러내는 L239 보다 먼저 실행된다. 따라서 빈 줄 방어가 순서상 무력하다.</p>
+<p><strong>Verifier 의 반론</strong> 빈 줄은 L232 의 *end++ = 0 처리로 생기지 않는다는 반론이 가능하나, 파일이 개행으로 시작하면 첫 바이트가 즉시 0 이 되어 s 는 빈 문자열이 된다.</p>
+<p><strong>조치</strong> size_t n = strlen(s); if (n &amp;&amp; s[n-1] == &#x27;\n&#x27;) s[n-1] = 0; 형태로 길이 0 을 먼저 확인한다.</p>
+<p><strong>기각된 후보 (오탐)</strong></p>
+<li><code>B1-06</code> RaspiStillYUV.c:331 — L329 의 malloc(len + 10) 이 L331 의 strncpy(..., len+1) 보다 항상 9바이트 크다. 복사 길이가 목적지 크기가 아니라 목적지 할당의 기준이 된 원본 길이에서 파생되므로 초과가 성립하지 않는다.</li>
+<h3>batch2 — containers (미디어 파서)</h3>
+<p>후보 100건 중 4건을 정밀 판정했고, <strong>0건이 확정</strong>됐다. 1건은 오탐으로 기각, 3건은 심각도를 낮췄다.</p>
+<table><tbody>
+<tr><th>ID</th><th>파일:라인</th><th>함수</th><th>CWE</th><th>판정</th><th>심각도</th><th>신뢰도</th><th>요약</th></tr>
+<tr><td>B2-01</td><td><code>io_net.c:138</code></td><td><code>io_net_open_capture_file</code></td><td>CWE-193</td><td>하향</td><td>낮음</td><td>0.88</td><td>L138 sprintf 의 유일한 방어가 L134 의 매직 넘버 -4 산술이다.</td></tr>
+<tr><td>B2-02</td><td><code>containers_filters.c:180</code></td><td><code>load_library</code></td><td>CWE-787 / CWE-676</td><td>하향</td><td>낮음</td><td>0.85</td><td>L180 strncat(filter_, &quot;_&quot;, 1) 의 3번째 인자가 원본 길이로 주어져, 목적지 잔여 공간을 제한하지 못한</td></tr>
+<tr><td>B2-03</td><td><code>simple_reader.c:522</code></td><td><code>simple_reader_open</code></td><td>CWE-787</td><td>하향</td><td>낮음</td><td>0.82</td><td>L516 과 L522 두 번의 strcpy 가 L511 의 단일 malloc 버퍼를 공유한다.</td></tr>
+<tr><td>B2-04</td><td><code>qsynth_reader.c:272</code></td><td><code>qsynth_get_duration</code></td><td>CWE-190 (제기됨)</td><td>기각</td><td>해당없음</td><td>0.90</td><td>파일에서 읽은 32비트 길이가 malloc 크기 계산에 직접 들어간다.</td></tr>
+</tbody></table>
+<h4>B2-01 · 낮음 · CWE-193</h4>
+<p><strong>위치</strong> <code>containers/io/io_net.c:138</code> (<code>io_net_open_capture_file</code>)</p>
+<p><strong>근거</strong> 포맷은 %s %s %c 3개(총 6자)가 host+port+1자로 치환되므로 실제 기록량은 strlen(format)+strlen(host)+strlen(port)-5 이고 NUL 포함 -4 다. 검사가 이를 300 이하로 묶으므로 char[300] 에 정확히 들어맞는다. 다만 여유가 0바이트이고 -4 가 포맷 문자열과 암묵적으로 결합된 매직 넘버라, IO_NET_CAPTURE_*_FILE 정의가 바뀌면 검사가 조용히 깨진다.</p>
+<p><strong>Verifier 의 반론</strong> 실제로 계산해보면 오버플로가 성립하지 않는다.</p>
+<p><strong>조치</strong> sprintf 를 snprintf(filename, sizeof(filename), ...) 로 바꾸고 반환값을 확인한다. 그러면 -4 산술 자체가 불필요해진다.</p>
+<h4>B2-02 · 낮음 · CWE-787 / CWE-676</h4>
+<p><strong>위치</strong> <code>containers/core/containers_filters.c:180</code> (<code>load_library</code>)</p>
+<p><strong>근거</strong> L176 snprintf(filter_, sizeof(filter_), &quot;%4.4s&quot;, ...) 가 최대 4자+NUL 을 쓰므로 L180 의 strncat 은 인덱스 4 와 5 에 &#x27;_&#x27; 와 NUL 을 써서 char filter_[6] 에 정확히 들어맞는다. 그러나 strncat 의 n 을 &#x27;붙일 문자열의 길이&#x27;로 쓴 것은 API 오용이며, filter_ 크기나 포맷 폭이 바뀌면 즉시 1바이트 오버플로가 된다.</p>
+<p><strong>Verifier 의 반론</strong> 현재 코드에서는 넘치지 않는다.</p>
+<p><strong>조치</strong> strncat 대신 vcos_safe_strcpy/snprintf 를 쓰거나 n 을 sizeof(filter_) - strlen(filter_) - 1 로 계산한다.</p>
+<h4>B2-03 · 낮음 · CWE-787</h4>
+<p><strong>위치</strong> <code>containers/simple/simple_reader.c:522</code> (<code>simple_reader_open</code>)</p>
+<p><strong>근거</strong> L511 할당량은 strlen(A)+strlen(B)+1 이다. L517 의 end 초기값 uri+strlen(A)+1 이 가리키는 직전 바이트는 NUL 이므로 구분자로 매칭될 수 없고, 따라서 end 오프셋 k &lt;= strlen(A) 가 보장된다. L522 의 기록량은 k+strlen(B)+1 &lt;= 할당량이다. 여유는 역시 0바이트다.</p>
+<p><strong>Verifier 의 반론</strong> 경계가 정확히 성립한다.</p>
+<p><strong>조치</strong> snprintf 로 재작성하거나, 최소한 end 오프셋이 strlen(A) 이하임을 명시적으로 assert 한다.</p>
+<p><strong>기각된 후보 (오탐)</strong></p>
+<li><code>B2-04</code> qsynth_reader.c:272 — L263 에 len &gt; (1&lt;&lt;20) 상한 검사가 malloc 보다 먼저 단락 평가로 실행되어 정수 오버플로 여지가 없다. L271-272 의 기록량 8+len 도 할당량 sizeof(QSYNTH_SEGMENT_T)+8+len 이내다.</li>
+<h3>batch3 — interface (IPC/드라이버 브리지)</h3>
+<p>후보 45건 중 5건을 정밀 판정했고, <strong>3건이 확정</strong>됐다. 2건은 오탐으로 기각, 0건은 심각도를 낮췄다.</p>
+<table><tbody>
+<tr><th>ID</th><th>파일:라인</th><th>함수</th><th>CWE</th><th>판정</th><th>심각도</th><th>신뢰도</th><th>요약</th></tr>
+<tr><td>B3-01</td><td><code>vcilcs.c:1048</code></td><td><code>ilcs_receive_buffer</code></td><td>CWE-787 / CWE-617</td><td>확정</td><td>높음</td><td>0.87</td><td>L1048 과 L1050 의 memcpy 길이가 IPC 메시지 필드에서 오는데, 목적지 크기 exe-&gt;bufferLen 과 비</td></tr>
+<tr><td>B3-02</td><td><code>vcilcs.c:1014</code></td><td><code>ilcs_receive_buffer</code></td><td>CWE-191</td><td>확정</td><td>높음</td><td>0.83</td><td>L1014 의 뺄셈 결과 bulk_len 이 음수가 될 수 있고, 그대로 bulk receive 길이로 전달된다.</td></tr>
+<tr><td>B3-03</td><td><code>vcilcs.c:1058</code></td><td><code>ilcs_receive_buffer</code></td><td>CWE-787</td><td>확정</td><td>높음</td><td>0.85</td><td>L1058 memcpy 의 유일한 방어가 L1056 의 vcos_assert 다.</td></tr>
+<tr><td>B3-04</td><td><code>vc_vchi_cecservice.c:749</code></td><td><code>vc_cec_send_message</code></td><td>CWE-787 (제기됨)</td><td>기각</td><td>해당없음</td><td>0.94</td><td>L747, L749 의 sprintf 가 char s[96] 에 루프로 누적 기록한다.</td></tr>
+<tr><td>B3-05</td><td><code>mmal_vc_diag.c:726</code></td><td><code>do_autosusptest</code></td><td>CWE-125 (제기됨)</td><td>기각</td><td>해당없음</td><td>0.95</td><td>L726, L727 이 argv[2], argv[3] 에 접근한다. argc 검사 위치를 확인해야 한다.</td></tr>
+</tbody></table>
+<h4>B3-01 · 높음 · CWE-787 / CWE-617</h4>
+<p><strong>위치</strong> <code>interface/vmcs_host/vcilcs.c:1048</code> (<code>ilcs_receive_buffer</code>)</p>
+<p><strong>근거</strong> interface/vcos/vcos_assert.h:239 에서 VCOS_ASSERT_ENABLED 가 0 일 때 vcos_assert(cond) 는 (void)0 으로 정의된다. 즉 릴리스 빌드에서 이 검사들은 코드에서 사라진다. 게다가 L1016 의 assert 는 clen 만 보고 headerlen/trailerlen 값 자체는 보지 않는다. L1046 의 end = dest + exe-&gt;bufferLen 기준으로 trailerlen &gt; bufferLen 이면 L1050 이 버퍼 앞쪽으로 기록한다.</p>
+<p><strong>Verifier 의 반론</strong> L1016 에 vcos_assert 가 있으니 검증된 것 아니냐는 반론. 그러나 이는 성립하지 않는다.</p>
+<p><strong>조치</strong> if (fixup-&gt;headerlen + fixup-&gt;trailerlen &gt; exe-&gt;bufferLen) return NULL; 을 vcos_assert 가 아닌 실제 런타임 검사로 추가한다.</p>
+<h4>B3-02 · 높음 · CWE-191</h4>
+<p><strong>위치</strong> <code>interface/vmcs_host/vcilcs.c:1014</code> (<code>ilcs_receive_buffer</code>)</p>
+<p><strong>근거</strong> int32_t bulk_len = exe-&gt;bufferLen - fixup-&gt;headerlen - fixup-&gt;trailerlen 에 하한 검사가 없다. 음수 bulk_len 은 L1026/L1028 의 vchiq_queue_bulk_receive* 로 전달되며, 수신측이 부호 없는 크기로 해석하면 대규모 DMA 기록이 된다.</p>
+<p><strong>Verifier 의 반론</strong> VideoCore 펌웨어가 신뢰 경계 안쪽이라면 공격자 제어가 아니라는 반론이 가능하다. 타당한 지적이므로 critical 이 아닌 high 로 유지한다.</p>
+<p><strong>조치</strong> 뺄셈 전에 headerlen + trailerlen &lt;= bufferLen 을 확인하고, bulk_len &lt;= 0 이면 조기 반환한다.</p>
+<h4>B3-03 · 높음 · CWE-787</h4>
+<p><strong>위치</strong> <code>interface/vmcs_host/vcilcs.c:1058</code> (<code>ilcs_receive_buffer</code>)</p>
+<p><strong>근거</strong> L1056 vcos_assert(clen == sizeof(IL_PASS_BUFFER_EXECUTE_T) + exe-&gt;bufferLen) 이 릴리스 빌드에서 제거되면, 실제 메시지 길이 clen 보다 큰 bufferLen 을 주장하는 메시지가 인접 힙을 읽어 dest 로 복사한다.</p>
+<p><strong>Verifier 의 반론</strong> B3-01 과 같은 근본 원인(assert 로 경계 검사)이므로 별건이 아니라 묶어야 한다는 반론이 가능하다. 다만 코드 경로(IL_BUFFER_INLINE)가 달라 개별 패치가 필요해 분리 유지한다.</p>
+<p><strong>조치</strong> assert 를 if 문으로 승격하고, 불일치 시 VC_CONTAINER 오류 반환 경로로 빠지게 한다.</p>
+<p><strong>기각된 후보 (오탐)</strong></p>
+<li><code>B3-04</code> vc_vchi_cecservice.c:749 — interface/vmcs_host/vc_cec.h:45 에서 CEC_MAX_XMIT_LENGTH = 15 다. L747 이 4바이트, L749 루프가 최대 15회 x 3바이트 = 45바이트, NUL 1바이트로 총 50바이트이며 char s[96] 에 충분히 들어간다. 추가로 L732 에서 length &lt;= CEC_MAX_XMIT_LENGTH 를 vcos_verify 로 먼저 거른다.</li>
+<li><code>B3-05</code> mmal_vc_diag.c:726 — L719 의 if (argc != 4) 블록이 L722 exit(1) 로 종료하므로, L726 도달 시 argv[2], argv[3] 은 항상 유효하다.</li>
+<h2>4. 오탐 억제가 실제로 작동했는가</h2>
+<p>Sieve 단계는 의도적으로 &#x27;넓게&#x27; 잡는다. 판정은 Verifier 가 한다. 정밀 판정한 15건 중 4건이 기각되고 3건이 하향됐다. 특히 다음 세 건은 사람이 보면 위험해 보이지만 실제로는 안전한 코드였다.</p>
+<li><code>vc_cec_send_message</code> 의 <code>sprintf</code> 루프 — 상수 <code>CEC_MAX_XMIT_LENGTH=15</code> 를 추적하니 최대 50바이트로 <code>char s[96]</code> 에 여유 있게 들어간다.</li>
+<li><code>qsynth_get_duration</code> — 파일에서 읽은 길이를 <code>malloc</code> 에 쓰지만 <code>len &gt; (1&lt;&lt;20)</code> 상한이 단락 평가로 먼저 걸린다.</li>
+<li><code>do_autosusptest</code> — <code>argv[2]</code> 접근 전에 <code>argc != 4</code> 로 <code>exit(1)</code> 한다.</li>
+<p>반대로 &#x27;하향&#x27; 3건은 지금은 안전하지만 <strong>여유가 0바이트</strong>인 코드다. 상수 하나만 바뀌면 즉시 취약해지므로 기각이 아니라 하향으로 남겼다.</p>
+<h2>5. 실행 정보</h2>
+<pre>
+$ python3 run.py --repo ../userland-master --offline
+repo files=277  elapsed=2.27s
+</pre>
+<p>Scout/Sieve 단계는 LLM 없이 <strong>2.27초</strong>만에 277개 파일을 처리했다. LLM 호출은 이후 단계에서만 발생한다.</p>
+<blockquote><strong>재현 방법</strong>: <code>ANTHROPIC_API_KEY</code> 를 설정하고 <code>--offline</code> 없이 실행하면 Analyst(Haiku) → Verifier(Sonnet) 단계까지 자동 수행된다. <code>--offline</code> 실행 시에는 <code>out/pending_prompts.json</code> 에 &#x27;실제로 전송했을 프롬프트&#x27;가 그대로 덤프된다.</blockquote></main></html>
